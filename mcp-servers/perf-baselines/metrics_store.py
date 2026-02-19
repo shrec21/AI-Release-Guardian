@@ -1,0 +1,1 @@
+"""Metrics store implementation."""

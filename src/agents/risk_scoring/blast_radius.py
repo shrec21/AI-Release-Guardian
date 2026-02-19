@@ -1,0 +1,1 @@
+"""Blast radius calculation logic."""

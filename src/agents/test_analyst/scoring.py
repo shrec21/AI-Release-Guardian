@@ -1,0 +1,1 @@
+"""Test analyst scoring logic."""

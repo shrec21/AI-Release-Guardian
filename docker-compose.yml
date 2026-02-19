@@ -1,0 +1,61 @@
+version: '3.9'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/release_guardian
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: release_guardian
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  jenkins-mcp:
+    build: ./mcp-servers/jenkins
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+
+  test-logs-mcp:
+    build: ./mcp-servers/test-logs
+    ports:
+      - "3002:3002"
+    env_file:
+      - .env
+
+  perf-baselines-mcp:
+    build: ./mcp-servers/perf-baselines
+    ports:
+      - "3003:3003"
+    env_file:
+      - .env
+
+  deploy-history-mcp:
+    build: ./mcp-servers/deploy-history
+    ports:
+      - "3004:3004"
+    env_file:
+      - .env
+
+volumes:
+  postgres_data:
