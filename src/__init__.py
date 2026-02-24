@@ -1,1 +1,1 @@
-"""AI Release Guardian - Intelligent release decision system."""
+"""AI Release Guardian - Intelligent release decision system"""
