@@ -84,7 +84,99 @@ class PolicyEvaluation(BaseModel):
         )
 
 
+class ReleaseDecision(BaseModel):
+    """The final output of the Release Decision Agent.
 
+    What the system decided and what it did about it. Contains the decision,
+    rationale, policy evaluation, and records of any notifications sent.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    build_id: str
+    commit_sha: str
+    decision: Literal["APPROVE", "BLOCK", "REQUEST_REVIEW"]
+    risk_score: int = Field(ge=0, le=100)
+    confidence_level: Literal["HIGH", "MEDIUM", "LOW", "CRITICAL"]
+    rationale: str = Field(description="Human-readable explanation of why this decision was made")
+    policy_evaluation: PolicyEvaluation
+    manual_override: bool = False
+    overridden_by: str | None = Field(
+        default=None, description="Reviewer ID if manually overridden"
+    )
+    override_reason: str | None = None
+    pipeline_action_taken: Literal["proceed", "hold", "abort", "none"] = "none"
+    notifications: list[NotificationRecord] = Field(default_factory=list)
+    timestamp: datetime
+
+    @model_validator(mode="after")
+    def validate_manual_override_has_reviewer(self) -> "ReleaseDecision":
+        """Ensure overridden_by is set when manual_override is True."""
+        if self.manual_override and self.overridden_by is None:
+            raise ValueError("overridden_by must be set when manual_override is True")
+        return self
+
+    @model_validator(mode="after")
+    def validate_pipeline_action_matches_decision(self) -> "ReleaseDecision":
+        """Ensure pipeline_action_taken is consistent with the decision.
+
+        - APPROVE → proceed
+        - BLOCK → abort
+        - REQUEST_REVIEW → hold
+        """
+        expected_actions = {
+            "APPROVE": "proceed",
+            "BLOCK": "abort",
+            "REQUEST_REVIEW": "hold",
+        }
+        expected = expected_actions[self.decision]
+        if self.pipeline_action_taken != expected:
+            raise ValueError(
+                f"pipeline_action_taken should be '{expected}' for decision '{self.decision}', "
+                f"got '{self.pipeline_action_taken}'"
+            )
+        return self
+
+    @computed_field
+    @property
+    def notification_channels(self) -> set[str]:
+        """Return a set of all channels notifications were sent to."""
+        return {n.channel for n in self.notifications}
+
+    @computed_field
+    @property
+    def all_notifications_succeeded(self) -> bool:
+        """Return True if all notifications have success=True."""
+        if not self.notifications:
+            return True
+        return all(n.success for n in self.notifications)
+
+    def to_summary(self) -> str:
+        """Generate a human-readable summary of the release decision.
+
+        Returns:
+            A summary string like "Decision: REQUEST_REVIEW for build-1847 (risk: 33/100 MEDIUM). Pipeline held. Notified: slack, github_status."
+        """
+        action_verbs = {
+            "proceed": "proceeding",
+            "hold": "held",
+            "abort": "aborted",
+            "none": "no action",
+        }
+        pipeline_str = action_verbs[self.pipeline_action_taken]
+
+        channels_str = ""
+        if self.notification_channels:
+            channels_str = f" Notified: {', '.join(sorted(self.notification_channels))}."
+
+        return (
+            f"Decision: {self.decision} for {self.build_id} "
+            f"(risk: {self.risk_score}/100 {self.confidence_level}). "
+            f"Pipeline {pipeline_str}.{channels_str}"
+        )
+
+
+class AuditRecord(BaseModel):
     """Immutable, complete record of a release decision and all inputs that led to it.
 
     This is the compliance artifact — it must contain everything needed to fully
