@@ -1,2 +1,33 @@
-# Risk weights configuration
-weights: {}
+# Risk model weights — must sum to 1.0
+weights:
+  test_risk: 0.30            # How much do test failures matter?
+  performance_risk: 0.30     # How much do perf regressions matter?
+  blast_radius_risk: 0.20    # How much does change scope matter?
+  historical_risk: 0.15      # How much does deployment history matter?
+  change_velocity_risk: 0.05 # How much does change frequency matter?
+
+# Maps composite risk score to confidence level
+confidence_thresholds:
+  HIGH: 20       # 0-20: safe to deploy
+  MEDIUM: 50     # 21-50: needs attention
+  LOW: 75        # 51-75: risky
+  CRITICAL: 100  # 76-100: do not deploy
+
+# Scoring penalties used by individual agents
+scoring:
+  # Test Analyst penalties (subtracted from 100)
+  new_bug_penalty: 15              # Per new bug found
+  coverage_drop_penalty_per_pct: 2 # Per 1% coverage drop
+  flaky_blocking_penalty: 5        # Per flaky test that blocks
+  no_failures_bonus: 5             # Bonus when all tests pass
+
+  # Performance Agent penalties (subtracted from 100)
+  regression_penalty: 20           # Per regression detected
+  slo_violation_penalty: 25        # Per SLO violation
+  anomaly_penalty: 10              # Per anomaly detected
+  missing_data_penalty: 5          # Per metric with no baseline data
+
+  # Risk Scoring Agent penalties
+  critical_service_penalty: 15     # Added when critical services are in blast radius
+  high_rollback_rate_penalty: 10   # Added when service rollback rate > 15%
+  large_changeset_penalty: 10      # Added when files changed > threshold
