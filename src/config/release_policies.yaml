@@ -1,2 +1,46 @@
-# Release policies configuration
-policies: {}
+environments:
+  production:
+    risk_threshold_approve: 25    # Auto-approve if risk score <= 25
+    risk_threshold_review: 50     # Request human review if 26-50
+    # Anything above 50 is auto-blocked
+    require_human_approval: true
+    min_test_confidence: 60       # Block if test confidence below this
+    min_perf_confidence: 50       # Block if perf confidence below this
+    deployment_windows:
+      blocked_hours: [0, 1, 2, 3, 4, 5, 22, 23]  # No deploys midnight-6am or after 10pm
+      blocked_days: [6, 7]        # No Saturday/Sunday deploys (isoweekday: 6=Sat, 7=Sun)
+    freeze_periods: []            # Add entries like {start: "2026-12-20", end: "2027-01-02", reason: "Holiday freeze"}
+    max_files_changed_without_review: 50
+    critical_services:
+      - payment-service
+      - auth-service
+      - api-gateway
+    required_approvers: 1         # Number of human approvers needed for REQUEST_REVIEW
+
+  staging:
+    risk_threshold_approve: 50
+    risk_threshold_review: 75
+    require_human_approval: false
+    min_test_confidence: 40
+    min_perf_confidence: 30
+    deployment_windows:
+      blocked_hours: []           # Deploy anytime
+      blocked_days: []
+    freeze_periods: []
+    max_files_changed_without_review: 200
+    critical_services: []
+    required_approvers: 0
+
+  development:
+    risk_threshold_approve: 75
+    risk_threshold_review: 90
+    require_human_approval: false
+    min_test_confidence: 20
+    min_perf_confidence: 20
+    deployment_windows:
+      blocked_hours: []
+      blocked_days: []
+    freeze_periods: []
+    max_files_changed_without_review: 500
+    critical_services: []
+    required_approvers: 0
