@@ -11,6 +11,7 @@ from datetime import datetime
 
 import structlog
 
+from src.config import get_confidence_thresholds, get_policy, get_risk_weights
 from src.graph.state import GuardianState
 from src.models import (
     PerformanceAnalysisReport,
@@ -230,13 +231,7 @@ async def risk_scoring_node(state: GuardianState) -> dict:
 
     Reads test_report and perf_report from state, computes a composite
     risk score from five weighted categories, and produces a RiskAssessment.
-
-    Risk model weights:
-        test_risk:            0.30
-        performance_risk:     0.30
-        blast_radius_risk:    0.20
-        historical_risk:      0.15
-        change_velocity_risk: 0.05
+    Weights and confidence thresholds are loaded from src/config/risk_weights.yaml.
     """
     build_id = state["build_id"]
     node = "risk_scoring_node"
@@ -257,29 +252,33 @@ async def risk_scoring_node(state: GuardianState) -> dict:
             logger.error("node.missing_inputs", node=node, build_id=build_id, missing=missing)
             return {"errors": [err]}
 
+        # Load weights and thresholds from config
+        weights = get_risk_weights()
+        thresholds = get_confidence_thresholds()
+
         # Derive component raw scores from agent confidence scores
         test_raw = float(100 - test_report.test_confidence_score)    # 28.0
         perf_raw = float(100 - perf_report.perf_confidence_score)    # 45.0
 
         components = [
             (
-                "test_risk", test_raw, 0.30,
+                "test_risk", test_raw, weights.test_risk,
                 "1 new bug in test_payment_charge; coverage dropped 1.2%",
             ),
             (
-                "performance_risk", perf_raw, 0.30,
+                "performance_risk", perf_raw, weights.performance_risk,
                 "Critical P99 regression: 318ms vs 189ms baseline; SLO violated",
             ),
             (
-                "blast_radius_risk", 35.0, 0.20,
+                "blast_radius_risk", 35.0, weights.blast_radius_risk,
                 "3 services affected including critical payment-service",
             ),
             (
-                "historical_risk", 30.0, 0.15,
+                "historical_risk", 30.0, weights.historical_risk,
                 "10% rollback rate over last 20 deploys; 1 recent incident",
             ),
             (
-                "change_velocity_risk", 20.0, 0.05,
+                "change_velocity_risk", 20.0, weights.change_velocity_risk,
                 "Normal commit velocity; no merge-train congestion detected",
             ),
         ]
@@ -289,24 +288,14 @@ async def risk_scoring_node(state: GuardianState) -> dict:
                 category=category,
                 raw_score=raw,
                 weight=weight,
-                weighted_score=round(raw * weight, 4),
+                weighted_score=round(raw * weight, 2),
                 details=details,
             )
             for category, raw, weight, details in components
         ]
 
-        # 8.4 + 13.5 + 7.0 + 4.5 + 1.0 = 34.4 → rounds to 34
         composite_risk_score = round(sum(rb.weighted_score for rb in risk_breakdown))
-
-        # Thresholds: 0-20 HIGH, 21-50 MEDIUM, 51-75 LOW, 76-100 CRITICAL
-        if composite_risk_score <= 20:
-            confidence_level = "HIGH"
-        elif composite_risk_score <= 50:
-            confidence_level = "MEDIUM"
-        elif composite_risk_score <= 75:
-            confidence_level = "LOW"
-        else:
-            confidence_level = "CRITICAL"
+        confidence_level = thresholds.get_level(composite_risk_score)
 
         blast_radius = BlastRadius(
             files_changed=12,
@@ -373,11 +362,8 @@ async def release_decision_node(state: GuardianState) -> dict:
     """Runs the Release Decision Agent.
 
     Reads risk_assessment from state and applies environment-specific
-    thresholds to produce the final ReleaseDecision with notifications.
-
-    Thresholds:
-        production: approve ≤ 25 | review ≤ 50 | else block
-        staging:    approve ≤ 50 | review ≤ 75 | else block
+    thresholds (loaded from release_policies.yaml) to produce the final
+    ReleaseDecision with notifications.
     """
     build_id = state["build_id"]
     node = "release_decision_node"
@@ -395,29 +381,32 @@ async def release_decision_node(state: GuardianState) -> dict:
         score = risk_assessment.composite_risk_score
         confidence_level = risk_assessment.confidence_level
 
-        # Environment-specific thresholds
-        if environment == "production":
-            threshold_approve, threshold_review = 25, 50
-        else:
-            threshold_approve, threshold_review = 50, 75
+        # Load policy thresholds and deployment-window rules from config
+        policy = get_policy(environment)
+        can_deploy, block_reason = policy.can_deploy_now()
+        freeze_ok = not policy.is_in_freeze()[0]
 
-        if score <= threshold_approve:
+        if not can_deploy:
+            raw_decision = "BLOCK"
+            pipeline_action = "abort"
+            rationale = f"Deployment blocked: {block_reason}"
+            notification_type = "block"
+        elif score <= policy.risk_threshold_approve:
             raw_decision = "APPROVE"
             pipeline_action = "proceed"
             rationale = (
                 f"Risk score {score}/100 ({confidence_level}) is within the "
-                f"{environment} approval threshold (≤{threshold_approve}). "
+                f"{environment} approval threshold (≤{policy.risk_threshold_approve}). "
                 "Automated approval granted."
             )
             notification_type = "approval"
-        elif score <= threshold_review:
+        elif score <= policy.risk_threshold_review:
             raw_decision = "REQUEST_REVIEW"
             pipeline_action = "hold"
             rationale = (
-                f"Risk score {score}/100 ({confidence_level}) exceeds the "
-                f"{environment} auto-approve threshold (>{threshold_approve}) "
-                f"but is below the block threshold (≤{threshold_review}). "
-                "Human review required before promoting."
+                f"Risk score {score}/100 ({confidence_level}) exceeds auto-approve "
+                f"threshold (>{policy.risk_threshold_approve}) but is within review range "
+                f"(≤{policy.risk_threshold_review}). Human review required before promoting."
             )
             notification_type = "review_request"
         else:
@@ -425,7 +414,7 @@ async def release_decision_node(state: GuardianState) -> dict:
             pipeline_action = "abort"
             rationale = (
                 f"Risk score {score}/100 ({confidence_level}) exceeds the "
-                f"{environment} block threshold (>{threshold_review}). "
+                f"{environment} maximum threshold (>{policy.risk_threshold_review}). "
                 "Deployment blocked automatically."
             )
             notification_type = "block"
@@ -433,11 +422,11 @@ async def release_decision_node(state: GuardianState) -> dict:
         policy_eval = PolicyEvaluation(
             environment=environment,
             policy_version="1.0",
-            risk_threshold_approve=threshold_approve,
-            risk_threshold_review=threshold_review,
+            risk_threshold_approve=policy.risk_threshold_approve,
+            risk_threshold_review=policy.risk_threshold_review,
             actual_risk_score=score,
-            deployment_window_ok=True,
-            freeze_period_ok=True,
+            deployment_window_ok=can_deploy,
+            freeze_period_ok=freeze_ok,
             overrides_applied=[],
             raw_decision=raw_decision,
             final_decision=raw_decision,
